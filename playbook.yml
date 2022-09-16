@@ -1,0 +1,7 @@
+
+- name: roles deploy wordpress
+  hosts: wp
+  become: yes
+  roles:
+    - deploy_wordpress
+

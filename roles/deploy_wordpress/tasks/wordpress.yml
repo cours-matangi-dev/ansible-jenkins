@@ -1,0 +1,78 @@
+- name: load vars
+  include_vars:
+    file: "{{ item }}" # item correspond aux items de with_fileglob dans main.yml, ici les noms de fichiers yml dans group_vars/instances_wordpress
+    name: "w" #le fichier wordpress.yml est donc "joué" autant de fois qu'il y a d'items dans with_fileglob de main.yml avec une valeur correspondante pr w
+
+- name: create network
+  docker_network:
+    name: "wordpress_{{ w.deploy_wordpress_name }}"
+    driver: bridge
+  when: inventory_hostname in groups['dbserver'][0]
+
+- name: create volume
+  docker_volume:
+    name: "{{ loop_item }}_{{ w.deploy_wordpress_name }}"
+    #recreate: always #utile pour le debugging
+    driver_options:
+      type: "nfs"
+      o: "nfsvers=4,addr={{ hostvars['nfs_server'].ansible_host }},rw"
+      device: ":/exports/{{ loop_item }}" #"/{{ w.deploy_wordpress_name }}"
+  when: inventory_hostname in groups['dbserver'][0]
+  with_items:
+    - "{{ nfs_server_dir_data }}"
+  loop_control: # on utilise deux types d'items, ceux de include_vars et ceux de with_items, on utilise donc loop_control
+    loop_var: loop_item #on redéfinit item de with_items à loop_item pour distinguer les deux types d'item'
+
+- name: install mariadb
+  docker_container:  
+    name: "mariadb_{{ w.deploy_wordpress_name }}"
+    image: mariadb
+    recreate: true
+    state: started
+    published_ports: "3306:3306"
+    timeout: 300    
+    networks:
+      - name: "wordpress_{{ w.deploy_wordpress_name }}"
+    mounts:
+      - source: "wp_database_{{ w.deploy_wordpress_name }}"
+        target: /var/lib/mysql
+        type: volume
+    env:
+      MYSQL_ROOT_PASSWORD: "{{ w.deploy_wordpress_mariadb_password }}" #aspect sécurité non pris en compte ici 
+      MYSQL_DATABASE: "wordpress"
+      MYSQL_USER: "{{ w.deploy_wordpress_mariadb_user }}"
+      MYSQL_PASSWORD: "{{ w.deploy_wordpress_mariadb_password }}" #aspect sécurité non pris en compte ici 
+  when: inventory_hostname in groups['dbserver'][0]
+
+- name: "install wordpress"
+  docker_container:
+    name: "wordpress_{{ w.deploy_wordpress_name }}"
+    image: wordpress
+    recreate: true
+    state: started
+    published_ports: "80:80"
+    timeout: 300
+    networks:
+      - name: "wordpress_{{ w.deploy_wordpress_name }}"
+    mounts:
+      - source: "wp_statics_{{ w.deploy_wordpress_name }}"
+        target: /var/www/html/
+        type: volume
+    env:
+       WORDPRESS_DB_HOST: "mariadb_{{ w.deploy_wordpress_name }}:3306"
+       WORDPRESS_DB_USER: "{{ w.deploy_wordpress_mariadb_user }}"
+       WORDPRESS_DB_PASSWORD: "{{ w.deploy_wordpress_mariadb_password }}"
+  when: inventory_hostname in groups['dbserver'][0]
+
+- name: wait for wordpress service up
+  uri:
+    url: "http://127.0.0.1"
+    method: GET
+    status_code: [200]
+  register: __result
+  until: __result.status == 200
+  retries: 240
+  delay: 1
+  when: inventory_hostname in groups['dbserver'][0]
+
+
